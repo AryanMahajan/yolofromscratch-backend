@@ -10,3 +10,23 @@ model_params:
   B : 2
   use_sigmoid : True
   use_conv : True
+
+dataset_params:
+  train_im_sets: ['data/VOC2007', 'data/VOC2012']
+  test_im_sets: []
+  num_classes : 20
+  im_size : 448
+
+train_params:
+  task_name: 'voc'
+  seed: 1111
+  acc_steps: 1
+  log_steps: 100
+  num_epochs: 135
+  batch_size: 64
+  lr_steps: [ 50, 75, 100, 125 ]
+  lr: 0.001
+  infer_conf_threshold : 0.2
+  eval_conf_threshold : 0.001
+  nms_threshold : 0.5
+  ckpt_name: 'yolo_voc2007.pth'
