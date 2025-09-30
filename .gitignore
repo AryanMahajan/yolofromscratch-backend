@@ -208,3 +208,7 @@ __marimo__/
 
 
 data
+
+# model-from-scratch
+models/voc/yolo_voc2007.pth
+weights
