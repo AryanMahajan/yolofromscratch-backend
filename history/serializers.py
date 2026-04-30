@@ -63,7 +63,9 @@ class DetectionHistoryListSerializer(serializers.ModelSerializer):
             'detection_type',
             'objects_detected',
             'confidence_threshold',
-            'detected_classes'
+            'detected_classes',
+            'image_or_video_ref',
+            'detection_data'
         ]
     
     def get_detected_classes(self, obj):

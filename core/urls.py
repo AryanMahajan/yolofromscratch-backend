@@ -1,5 +1,7 @@
 from django.contrib import admin
 from django.urls import path, include
+from django.conf import settings
+from django.conf.urls.static import static
 from accounts.views import CustomConfirmEmailView
 from rest_framework import permissions
 from drf_yasg.views import get_schema_view
@@ -36,7 +38,14 @@ urlpatterns = [
     # 3️⃣ Detection History API
     path('', include('history.urls')),
 
-    # 4️⃣ API Documentation
+    # 4️⃣ Inference API (Video Upload, etc.)
+    path('api/inference/', include('inference.urls')),
+
+    # 5️⃣ API Documentation
     path('swagger/', schema_view.with_ui('swagger', cache_timeout=0), name='schema-swagger-ui'),
     path('redoc/', schema_view.with_ui('redoc', cache_timeout=0), name='schema-redoc'),
 ]
+
+if settings.DEBUG:
+    urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
+    urlpatterns += static(settings.STATIC_URL, document_root=settings.STATIC_ROOT)

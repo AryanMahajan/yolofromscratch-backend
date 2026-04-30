@@ -3,6 +3,7 @@ import cv2
 import base64
 import numpy as np
 import logging
+from collections import Counter
 from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
 from ultralytics import YOLO
@@ -27,6 +28,8 @@ class VideoConsumer(AsyncWebsocketConsumer):
         self.detection_session = {
             'total_frames': 0,
             'total_objects': 0,
+            'seen_track_ids': set(),
+            'class_counts': Counter(),
             'detections': [],
             'confidence_threshold': 0.5
         }
@@ -45,6 +48,7 @@ class VideoConsumer(AsyncWebsocketConsumer):
             from history.models import DetectionHistory
             
             if self.detection_session['total_frames'] > 0:
+                detected_classes = list(self.detection_session['class_counts'].keys())
                 DetectionHistory.objects.create(
                     user=self.user,
                     detection_data={
@@ -52,13 +56,16 @@ class VideoConsumer(AsyncWebsocketConsumer):
                             'total_frames': self.detection_session['total_frames'],
                             'total_objects_detected': self.detection_session['total_objects'],
                             'confidence_threshold': self.detection_session['confidence_threshold'],
-                            'session_duration_frames': self.detection_session['total_frames']
+                            'session_duration_frames': self.detection_session['total_frames'],
+                            'class_counts': dict(self.detection_session['class_counts'])
                         },
+                        'detected_classes': detected_classes,
                         'detections': self.detection_session['detections'][-10:]  # Keep last 10 detections
                     },
                     detection_type='live',
                     confidence_threshold=self.detection_session['confidence_threshold'],
-                    objects_detected=self.detection_session['total_objects']
+                    objects_detected=self.detection_session['total_objects'],
+                    detected_classes=detected_classes
                 )
                 logger.info(f"Saved detection session for user {self.user.username}")
         except Exception as e:
@@ -87,19 +94,23 @@ class VideoConsumer(AsyncWebsocketConsumer):
                 logger.error("cv2.imdecode returned None. The image data is likely corrupted or in an unsupported format.")
                 return
 
-            # Run YOLO model with confidence threshold
+            # Run YOLO model with confidence threshold and tracking
             conf_threshold = self.detection_session['confidence_threshold']
-            results = model(img, conf=conf_threshold)
+            results = model.track(img, persist=True, conf=conf_threshold, verbose=False)
 
             # Extract detection information
             detections = []
             if len(results) > 0 and hasattr(results[0], 'boxes') and results[0].boxes is not None:
                 boxes = results[0].boxes
+                # Get track IDs if available
+                track_ids = boxes.id.int().cpu().tolist() if boxes.id is not None else [None] * len(boxes)
+                
                 for i in range(len(boxes)):
                     # Get class name
                     class_id = int(boxes.cls[i])
                     class_name = model.names[class_id] if class_id in model.names else f"class_{class_id}"
                     confidence = float(boxes.conf[i])
+                    track_id = track_ids[i]
                     
                     # Get bounding box coordinates
                     xyxy = boxes.xyxy[i].cpu().numpy()
@@ -107,6 +118,7 @@ class VideoConsumer(AsyncWebsocketConsumer):
                     detection = {
                         'class': class_name,
                         'confidence': confidence,
+                        'track_id': track_id,
                         'bbox': {
                             'x1': float(xyxy[0]),
                             'y1': float(xyxy[1]),
@@ -116,9 +128,19 @@ class VideoConsumer(AsyncWebsocketConsumer):
                     }
                     detections.append(detection)
 
+                    # Update session statistics only for new track_ids
+                    if track_id is not None:
+                        if track_id not in self.detection_session['seen_track_ids']:
+                            self.detection_session['seen_track_ids'].add(track_id)
+                            self.detection_session['total_objects'] += 1
+                            self.detection_session['class_counts'][class_name] += 1
+                    else:
+                        # Fallback for untracked objects
+                        self.detection_session['total_objects'] += 1
+                        self.detection_session['class_counts'][class_name] += 1
+
             # Update session statistics
             self.detection_session['total_frames'] += 1
-            self.detection_session['total_objects'] += len(detections)
             
             # Store recent detections (keep last 50 for memory efficiency)
             if len(detections) > 0:
@@ -149,7 +171,8 @@ class VideoConsumer(AsyncWebsocketConsumer):
                     'objects_in_frame': len(detections),
                     'total_frames_processed': self.detection_session['total_frames'],
                     'total_objects_detected': self.detection_session['total_objects'],
-                    'confidence_threshold': conf_threshold
+                    'confidence_threshold': conf_threshold,
+                    'class_counts': dict(self.detection_session['class_counts'])
                 }
             }))
             

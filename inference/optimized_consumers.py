@@ -40,6 +40,7 @@ class OptimizedVideoConsumer(AsyncWebsocketConsumer):
         self.detection_session = {
             'total_frames': 0,
             'total_objects': 0,
+            'seen_track_ids': set(),  # Track unique object IDs
             'detections': [],
             'confidence_threshold': 0.5,
             'class_counts': Counter(),  # Track all detected classes
@@ -134,20 +135,25 @@ class OptimizedVideoConsumer(AsyncWebsocketConsumer):
                 img_resized = img
                 scale = 1.0
 
-            # Run YOLO model with optimized settings
-            results = self.model(img_resized, conf=confidence_threshold, verbose=False)
+            # Run YOLO model with optimized settings using track for persistence
+            results = self.model.track(img_resized, persist=True, conf=confidence_threshold, verbose=False)
             
             # Extract detection information with enhanced tracking
             detections = []
             frame_classes = []
+            track_ids = []
             
             if len(results) > 0 and hasattr(results[0], 'boxes') and results[0].boxes is not None:
                 boxes = results[0].boxes
+                # Get track IDs if available
+                current_track_ids = boxes.id.int().cpu().tolist() if boxes.id is not None else [None] * len(boxes)
+                
                 for i in range(len(boxes)):
                     # Get class name
                     class_id = int(boxes.cls[i])
                     class_name = self.model.names[class_id] if class_id in self.model.names else f"class_{class_id}"
                     confidence = float(boxes.conf[i])
+                    track_id = current_track_ids[i]
                     
                     # Get bounding box coordinates and scale back to original size
                     xyxy = boxes.xyxy[i].cpu().numpy()
@@ -156,6 +162,7 @@ class OptimizedVideoConsumer(AsyncWebsocketConsumer):
                         'class': class_name,
                         'confidence': confidence,
                         'class_id': class_id,
+                        'track_id': track_id,
                         'bbox': {
                             'x1': float(xyxy[0] / scale),
                             'y1': float(xyxy[1] / scale),
@@ -165,6 +172,7 @@ class OptimizedVideoConsumer(AsyncWebsocketConsumer):
                     }
                     detections.append(detection)
                     frame_classes.append(class_name)
+                    track_ids.append(track_id)
 
             # Draw bounding boxes
             annotated_frame = results[0].plot()
@@ -233,12 +241,22 @@ class OptimizedVideoConsumer(AsyncWebsocketConsumer):
                 
                 # Update session statistics with enhanced tracking
                 self.detection_session['total_frames'] += 1
-                self.detection_session['total_objects'] += len(detections)
                 
-                # Update class counts for all detected classes in this frame
-                for class_name in frame_classes:
-                    self.detection_session['class_counts'][class_name] += 1
-                
+                # Update unique object tracking and class counts using track_id
+                for detection in detections:
+                    track_id = detection.get('track_id')
+                    class_name = detection.get('class')
+                    
+                    if track_id is not None:
+                        if track_id not in self.detection_session['seen_track_ids']:
+                            self.detection_session['seen_track_ids'].add(track_id)
+                            self.detection_session['total_objects'] += 1
+                            self.detection_session['class_counts'][class_name] += 1
+                    else:
+                        # Fallback for untracked objects - count every detection
+                        self.detection_session['total_objects'] += 1
+                        self.detection_session['class_counts'][class_name] += 1
+
                 # Store recent detections with better structure
                 if len(detections) > 0:
                     detection_frame = {
@@ -323,6 +341,7 @@ class OptimizedCoordsVideoConsumer(AsyncWebsocketConsumer):
         self.detection_session = {
             'total_frames': 0,
             'total_objects': 0,
+            'seen_track_ids': set(),  # Track unique object IDs
             'detections': [],
             'confidence_threshold': 0.5,
             'class_counts': Counter(),
@@ -413,8 +432,8 @@ class OptimizedCoordsVideoConsumer(AsyncWebsocketConsumer):
                 img_resized = img
                 scale = 1.0
 
-            # Run YOLO model - only inference, no plotting
-            results = self.model(img_resized, conf=confidence_threshold, verbose=False)
+            # Run YOLO model with tracking - only inference, no plotting
+            results = self.model.track(img_resized, persist=True, conf=confidence_threshold, verbose=False)
             
             # Extract detection coordinates and info with class tracking
             detections = []
@@ -422,11 +441,15 @@ class OptimizedCoordsVideoConsumer(AsyncWebsocketConsumer):
             
             if len(results) > 0 and hasattr(results[0], 'boxes') and results[0].boxes is not None:
                 boxes = results[0].boxes
+                # Get track IDs if available
+                current_track_ids = boxes.id.int().cpu().tolist() if boxes.id is not None else [None] * len(boxes)
+                
                 for i in range(len(boxes)):
                     # Get class name
                     class_id = int(boxes.cls[i])
                     class_name = self.model.names[class_id] if class_id in self.model.names else f"class_{class_id}"
                     confidence = float(boxes.conf[i])
+                    track_id = current_track_ids[i]
                     
                     # Get bounding box coordinates and scale back to original size
                     xyxy = boxes.xyxy[i].cpu().numpy()
@@ -435,6 +458,7 @@ class OptimizedCoordsVideoConsumer(AsyncWebsocketConsumer):
                         'class': class_name,
                         'confidence': confidence,
                         'class_id': class_id,
+                        'track_id': track_id,
                         'bbox': {
                             'x1': float(xyxy[0] / scale),
                             'y1': float(xyxy[1] / scale),
@@ -503,11 +527,21 @@ class OptimizedCoordsVideoConsumer(AsyncWebsocketConsumer):
                 
                 # Update session statistics with enhanced tracking
                 self.detection_session['total_frames'] += 1
-                self.detection_session['total_objects'] += len(detections)
                 
-                # Update class counts
-                for class_name in frame_classes:
-                    self.detection_session['class_counts'][class_name] += 1
+                # Update unique object tracking and class counts
+                for detection in detections:
+                    track_id = detection.get('track_id')
+                    class_name = detection.get('class')
+                    
+                    if track_id is not None:
+                        if track_id not in self.detection_session['seen_track_ids']:
+                            self.detection_session['seen_track_ids'].add(track_id)
+                            self.detection_session['total_objects'] += 1
+                            self.detection_session['class_counts'][class_name] += 1
+                    else:
+                        # Fallback
+                        self.detection_session['total_objects'] += 1
+                        self.detection_session['class_counts'][class_name] += 1
                 
                 # Store recent detections
                 if len(detections) > 0:

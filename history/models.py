@@ -42,12 +42,19 @@ class DetectionHistory(models.Model):
     
     def get_detected_classes(self):
         """Extract unique detected classes from detection_data"""
-        if not self.detection_data or 'detections' not in self.detection_data:
+        if not self.detection_data:
             return []
-        
-        classes = set()
-        for detection in self.detection_data.get('detections', []):
-            if 'class' in detection:
-                classes.add(detection['class'])
-        
-        return list(classes)
+
+        # Check if already present as a list (e.g. from VideoUploadView)
+        if 'detected_classes' in self.detection_data:
+            return self.detection_data['detected_classes']
+
+        # Extract from detections list (e.g. from live detection)
+        if 'detections' in self.detection_data:
+            classes = set()
+            for detection in self.detection_data.get('detections', []):
+                if 'class' in detection:
+                    classes.add(detection['class'])
+            return list(classes)
+
+        return []
