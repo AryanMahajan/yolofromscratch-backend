@@ -619,6 +619,7 @@ class UltraLightVideoConsumer(AsyncWebsocketConsumer):
         self.detection_session = {
             'total_frames': 0,
             'total_objects': 0,
+            'seen_track_ids': set(),
             'detections': [],
             'confidence_threshold': 0.6,
             'class_counts': Counter(),
@@ -694,8 +695,8 @@ class UltraLightVideoConsumer(AsyncWebsocketConsumer):
             # Aggressive resize for speed
             img = cv2.resize(img, (416, 416))
 
-            # Fast inference
-            results = self.model(img, conf=confidence_threshold, verbose=False, stream=True)
+            # Fast inference with tracking
+            results = self.model.track(img, persist=True, conf=confidence_threshold, verbose=False, stream=True)
             result = next(results)
             
             # Extract detections with class tracking
@@ -704,16 +705,21 @@ class UltraLightVideoConsumer(AsyncWebsocketConsumer):
             
             if hasattr(result, 'boxes') and result.boxes is not None:
                 boxes = result.boxes
+                # Get track IDs if available
+                track_ids = boxes.id.int().cpu().tolist() if boxes.id is not None else [None] * len(boxes)
+                
                 for i in range(len(boxes)):
                     class_id = int(boxes.cls[i])
                     class_name = self.model.names[class_id] if class_id in self.model.names else f"class_{class_id}"
                     confidence = float(boxes.conf[i])
+                    track_id = track_ids[i]
                     xyxy = boxes.xyxy[i].cpu().numpy()
                     
                     detection = {
                         'class': class_name,
                         'confidence': confidence,
                         'class_id': class_id,
+                        'track_id': track_id,
                         'bbox': {
                             'x1': float(xyxy[0]),
                             'y1': float(xyxy[1]),
@@ -779,11 +785,21 @@ class UltraLightVideoConsumer(AsyncWebsocketConsumer):
                 
                 # Update session statistics
                 self.detection_session['total_frames'] += 1
-                self.detection_session['total_objects'] += len(detections)
                 
-                # Update class counts
-                for class_name in frame_classes:
-                    self.detection_session['class_counts'][class_name] += 1
+                # Update unique object tracking and class counts
+                for detection in detections:
+                    track_id = detection.get('track_id')
+                    class_name = detection.get('class')
+                    
+                    if track_id is not None:
+                        if track_id not in self.detection_session['seen_track_ids']:
+                            self.detection_session['seen_track_ids'].add(track_id)
+                            self.detection_session['total_objects'] += 1
+                            self.detection_session['class_counts'][class_name] += 1
+                    else:
+                        # Fallback
+                        self.detection_session['total_objects'] += 1
+                        self.detection_session['class_counts'][class_name] += 1
                 
                 # Store recent detections (minimal storage)
                 if len(detections) > 0:
